@@ -1,23 +1,39 @@
+"""Genera las etiquetas de la hiperheurística de selección para TSP.
+
+Para cada instancia se ejecutan las tres heurísticas de bajo nivel y se
+etiqueta con la que obtiene el menor costo. El resultado se escribe en
+``data/train_labeled.csv`` y ``data/test_labeled.csv``.
+"""
+
 import csv
 import random
 import time
-import algorithms as ag 
 from collections import Counter
 from pathlib import Path
 
+try:  # Ejecución como módulo: python -m src.generate_labels
+    from src import algorithms as ag
+except ImportError:  # Ejecución directa: python src/generate_labels.py
+    import algorithms as ag
+
 SEED = 67
-DATA_DIR = Path("data")
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT_DIR / "data"
 INSTANCES_DIR = DATA_DIR / "instances"
 
-temperatures = {
-    "SA_T0" : 100.0,
-    "SA_T_MIN" : 0.001,
-    "SA_COOLING_RATE" : 0.99,
-    "SA_MAX_ITER" : 1000
+TEMPERATURES = {
+    "SA_T0": 100.0,
+    "SA_T_MIN": 0.001,
+    "SA_COOLING_RATE": 0.99,
+    "SA_MAX_ITER": 1000,
 }
 
+
 def load_instance(instance_id: str) -> list[tuple[float, float]]:
+    """Carga las coordenadas de una instancia desde ``data/instances``."""
     filepath = INSTANCES_DIR / f"{instance_id}.csv"
+    if not filepath.exists():
+        raise FileNotFoundError(f"No existe la instancia: {filepath}")
     with filepath.open("r", newline="", encoding="utf-8") as f:
         return [(float(r["x"]), float(r["y"])) for r in csv.DictReader(f)]
 
@@ -25,33 +41,44 @@ def load_instance(instance_id: str) -> list[tuple[float, float]]:
 def evaluate_instance(
     points: list[tuple[float, float]], rng: random.Random
 ) -> tuple[float, float, float, str]:
+    """Ejecuta las tres heurísticas y devuelve sus costos y la mejor."""
     dist = ag.build_dist_matrix(points)
     n = len(points)
     random_tour = rng.sample(range(n), n)
 
-    cost_2opt_hc = ag.get_tour_length(dist, ag.local_search_2opt(dist, random_tour))
-
-    cost_sa_2opt = ag.get_tour_length(
-        dist, ag.simulated_annealing(dist, random_tour, rng, temperatures)
+    cost_2opt_hc = ag.get_tour_length(
+        dist, ag.local_search_2opt(dist, random_tour)
     )
 
-    tour_mst = ag.preorder(ag.mst_prim(dist))
-    cost_mst_2opt = ag.get_tour_length(dist, ag.local_search_2opt(dist, tour_mst))
+    # SA + 2-opt: el recocido explora y la búsqueda local refina el resultado.
+    sa_tour = ag.simulated_annealing(dist, random_tour, rng, TEMPERATURES)
+    cost_sa_2opt = ag.get_tour_length(
+        dist, ag.local_search_2opt(dist, sa_tour)
+    )
+
+    mst_tour = ag.preorder(ag.mst_prim(dist))
+    cost_mst_2opt = ag.get_tour_length(
+        dist, ag.local_search_2opt(dist, mst_tour)
+    )
 
     costs = {
         "2opt_hill_climbing": cost_2opt_hc,
         "sa_2opt": cost_sa_2opt,
         "mst_2opt": cost_mst_2opt,
     }
-    best_algorithm = min(costs, key=costs.get)
+    best_algorithm = min(costs, key=lambda alg: costs[alg])
 
     return cost_2opt_hc, cost_sa_2opt, cost_mst_2opt, best_algorithm
 
-def process_split(input_csv: Path, output_csv: Path, rng: random.Random) -> Counter:
-    counts = Counter()
+
+def process_split(
+    input_csv: Path, output_csv: Path, rng: random.Random
+) -> Counter:
+    """Etiqueta todas las instancias de un archivo CSV de partición."""
+    counts: Counter = Counter()
     with input_csv.open("r", newline="", encoding="utf-8") as f_in:
         reader = csv.DictReader(f_in)
-        fieldnames = list(reader.fieldnames) + [
+        fieldnames = list(reader.fieldnames or []) + [
             "cost_2opt_hill_climbing",
             "cost_sa_2opt",
             "cost_mst_2opt",
@@ -80,6 +107,7 @@ def process_split(input_csv: Path, output_csv: Path, rng: random.Random) -> Coun
 
 
 def print_balance(title: str, counts: Counter) -> None:
+    """Imprime la distribución de etiquetas de una partición."""
     total = sum(counts.values())
     print(f"\n=== {title} (n = {total}) ===")
     for alg in ["2opt_hill_climbing", "mst_2opt", "sa_2opt"]:
@@ -88,7 +116,7 @@ def print_balance(title: str, counts: Counter) -> None:
         print(f"  {alg:<22}: {c:>3} ({pct:5.2f}%)")
 
 
-if __name__ == "__main__":
+def main() -> None:
     t_start = time.perf_counter()
     rng = random.Random(SEED)
 
@@ -104,5 +132,9 @@ if __name__ == "__main__":
 
     print_balance("BALANCE ENTRENAMIENTO (train_labeled.csv)", train_counts)
     print_balance("BALANCE PRUEBA (test_labeled.csv)", test_counts)
-    print_balance("BALANCE GLOBAL (500 instancias)", total_counts)
+    print_balance("BALANCE GLOBAL", total_counts)
+    print(f"\nTiempo de generación: {time.perf_counter() - t_start:.2f} s")
 
+
+if __name__ == "__main__":
+    main()
